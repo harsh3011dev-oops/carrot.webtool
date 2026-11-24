@@ -275,3 +275,4 @@ Verify system components independently with the included test suites:
 ## 📜 License & Citation
 Project NOVA is developed as an open-source, local-first research initiative for verified AI assistance.
 Developed with ❤️ by Harsh.
+
