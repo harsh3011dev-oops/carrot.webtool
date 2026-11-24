@@ -1,0 +1,34 @@
+# ==========================================
+# PROJECT NOVA - CORE DEPENDENCIES (FAST & LIGHTWEIGHT)
+# ==========================================
+
+# 1. Pydantic & Config Management
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+
+# 2. Local LLM Runtime & API Client (Runs Qwen 2.5 & Nomic-Embed locally)
+ollama>=0.3.0
+
+# 3. Web Retrieval & Extraction (100% Free - Zero API Keys)
+duckduckgo-search>=6.0.0
+trafilatura>=1.12.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# 4. Local Vector Search & CPU Reranking
+faiss-cpu>=1.8.0
+flashrank>=0.2.5
+numpy>=1.25.0
+
+# 5. Workflow & Orchestration
+langgraph>=0.2.0
+
+# 6. Backend & Frontend UI
+fastapi>=0.110.0
+uvicorn>=0.29.0
+streamlit>=1.35.0
+
+# 7. Testing & Utilities
+pytest>=8.0.0
+tqdm>=4.66.0
+python-dotenv>=1.0.0

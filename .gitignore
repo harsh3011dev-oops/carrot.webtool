@@ -1,0 +1,23 @@
+# Environments
+venv/
+.venv/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data and logs
+*.log
+data/routing_dataset.jsonl
+
+# Environment Variables
+.env
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
