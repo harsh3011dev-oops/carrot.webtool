@@ -19,14 +19,14 @@ class Settings(BaseSettings):
     # 1. Fast SLM for Routing, Intent & Claim Extraction (Ultra-low latency on CPU)
     ROUTER_MODEL: str = "qwen2.5:1.5b"
     # 2. Reasoning SLM for Grounded Answer Synthesis & Citations
-    SYNTHESIS_MODEL: str = "qwen2.5:3b"
+    SYNTHESIS_MODEL: str = "qwen2.5-coder:latest"
     # 3. Embedding Model for Local Vector Search
     EMBEDDING_MODEL: str = "nomic-embed-text"
     
     # Model Generation Parameters
     ROUTER_TEMPERATURE: float = 0.0      # Deterministic classification
     SYNTHESIS_TEMPERATURE: float = 0.2   # Strict factual adherence
-    MAX_TOKENS_ROUTER: int = 256
+    MAX_TOKENS_ROUTER: int = 512
     MAX_TOKENS_SYNTHESIS: int = 1024
     
     # Web Retrieval Settings

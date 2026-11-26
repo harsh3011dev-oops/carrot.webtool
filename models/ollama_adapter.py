@@ -99,28 +99,44 @@ class OllamaAdapter(BaseLLMAdapter):
 
         raw_content = response["message"]["content"].strip()
 
-        # Clean any accidental markdown codeblock wrappers
+        # Clean any accidental markdown codeblock wrappers and trailing commas
         cleaned = re.sub(r"^```(?:json)?\s*", "", raw_content)
         cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+        match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+        if match:
+            cleaned = match.group(1).strip()
+        cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
 
         try:
-            return response_model.model_validate_json(cleaned)
-        except ValidationError as e:
-            logger.warning(f"First JSON validation attempt failed: {e}. Raw content: {raw_content}")
-            # Quick repair retry with explicit JSON payload hint
+            # Parse dict first so Pydantic model_validator(mode='before') can normalize fields
+            parsed_dict = json.loads(cleaned)
+            return response_model.model_validate(parsed_dict)
+        except Exception as e:
+            logger.warning(f"First JSON validation attempt failed: {e}. Raw content: {raw_content[:200]}")
+            # Max 1 repair retry with explicit validation hint
             repair_prompt = (
-                f"The following JSON was invalid:\n{cleaned}\n\n"
-                f"Fix the JSON syntax so it strictly complies with this schema:\n{schema_json}"
+                f"The following JSON was invalid or failed validation ({str(e)[:150]}):\n{cleaned}\n\n"
+                f"Correct the values and return ONLY valid JSON matching this schema:\n{schema_json}"
             )
-            retry_res = self.client.chat(
-                model=self.model_name,
-                messages=[{"role": "user", "content": repair_prompt}],
-                format="json",
-                options={"temperature": 0.0},
-            )
-            retry_cleaned = re.sub(r"^```(?:json)?\s*", "", retry_res["message"]["content"].strip())
-            retry_cleaned = re.sub(r"\s*```$", "", retry_cleaned).strip()
-            return response_model.model_validate_json(retry_cleaned)
+            try:
+                retry_res = self.client.chat(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": repair_prompt}],
+                    format="json",
+                    options={"temperature": 0.0},
+                )
+                retry_content = retry_res["message"]["content"].strip()
+                retry_cleaned = re.sub(r"^```(?:json)?\s*", "", retry_content)
+                retry_cleaned = re.sub(r"\s*```$", "", retry_cleaned).strip()
+                m2 = re.search(r"(\{.*\})", retry_cleaned, re.DOTALL)
+                if m2:
+                    retry_cleaned = m2.group(1).strip()
+                retry_cleaned = re.sub(r",\s*([\]}])", r"\1", retry_cleaned)
+                parsed_retry = json.loads(retry_cleaned)
+                return response_model.model_validate(parsed_retry)
+            except Exception as repair_err:
+                logger.error(f"Structured repair pass also failed: {repair_err}. Raising to router fallback.")
+                raise
 
     def stream(
         self,

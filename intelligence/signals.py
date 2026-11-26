@@ -29,7 +29,13 @@ DEFINITION_PATTERN = re.compile(
 )
 
 MATH_PATTERN = re.compile(
-    r"^(calculate|compute|solve|integrate|differentiate|what\s+is\s+the\s+derivative\s+of|evaluate|what\s+is\s+[\d+\-*/\^().\s=x]+$)",
+    r"^(calculate|compute|solve|integrate|differentiate|what\s+is\s+the\s+derivative\s+of|evaluate|"
+    r"what\s+is\s+[\d+\-*/\^().\s=x]+$|"
+    r".*\b(\d+[\.\d]*)\s*(multiplied\s+by|times|divided\s+by|plus|minus|\+|\*|/|-)\s*(\d+[\.\d]*)|"
+    r".*\b\d+%\s+of\s+\d+|"
+    r".*\bconvert\s+[\d\.]+\s*(kilometres?|kilometers?|km|metres?|meters?|m|miles?|kg|grams?|pounds?|lbs?)\s+(in|into|to)\s+\w+|"
+    r".*\bbinary\s+(number\s+)?[01]+\s+in\s+decimal|"
+    r".*\bhow\s+many\s+sides\s+does\s+a\s+(triangle|quadrilateral|pentagon|hexagon|heptagon|octagon|nonagon|decagon)\s+have)",
     re.IGNORECASE
 )
 
@@ -63,6 +69,34 @@ TEMPORAL_PATTERNS = [
     r"\bin\s+202[5-9]\b",  # Years 2025-2029 (post-cutoff)
 ]
 TEMPORAL_REGEX = re.compile("|".join(TEMPORAL_PATTERNS), re.IGNORECASE)
+
+# Static high-confidence facts & conceptual definitions for Tier-0 Fast-Path (0ms search latency)
+STATIC_SCIENCE_PATTERNS = [
+    r"chemical\s+formula\s+(of|for)\s+[\w\s]+",
+    r"formula\s+(of|for)\s+(water|carbon\s+dioxide|salt|methane|glucose|ozone|table\s+salt)",
+    r"((largest|smallest|hottest|coldest|closest|nearest)\s+planet|planet\s+(is\s+)?(the\s+)?(largest|smallest|hottest|coldest|closest|nearest))\s+(in|to)\s+(our\s+|the\s+)?(solar\s+system|earth|sun)",
+    r"(speed\s+of\s+light|value\s+of\s+pi|atomic\s+number\s+of\s+\w+|boiling\s+point\s+of\s+\w+|freezing\s+point\s+of\s+\w+)",
+    r"how\s+many\s+(planets|continents|bones\s+in\s+human\s+body)\b",
+    r"photosynthesis(\s+in\s+simple\s+words)?",
+    r"newton's\s+(first|second|third)\s+law(\s+of\s+motion)?",
+]
+STATIC_SCIENCE_REGEX = re.compile("|".join(STATIC_SCIENCE_PATTERNS), re.IGNORECASE)
+
+STATIC_TECH_PATTERNS = [
+    r"full\s+form\s+of\s+(cpu|ram|rom|gpu|html|http|https|api|url|bios|os|ip|tcp|udp|lan|wan|sql|ssd|hdd)",
+    r"(primary|main)\s+function\s+of\s+(cpu|ram|rom|gpu|operating\s+system)",
+    r"what\s+does\s+(a\s+)?(cpu|gpu|ram|rom)\s+do",
+    r"difference\s+between\s+(an?\s+)?(ram\s+and\s+rom|tcp\s+and\s+udp|compiler\s+and\s+(an?\s+)?interpreter|ipv4\s+and\s+ipv6)",
+    r"what\s+is\s+(the\s+difference\s+between\s+)?(ram|rom|cpu|gpu|binary\s+search|quicksort|merge\s+sort|bubble\s+sort|recursion)\b",
+    r"define\s+an?\s+algorithm|what\s+is\s+an?\s+algorithm",
+]
+STATIC_TECH_REGEX = re.compile("|".join(STATIC_TECH_PATTERNS), re.IGNORECASE)
+
+STATIC_GEO_PATTERNS = [
+    r"capital\s+of\s+(france|germany|italy|spain|india|japan|australia|canada|brazil|russia|china|united\s+kingdom|uk|usa|united\s+states)",
+    r"(highest\s+mountain|longest\s+river|deepest\s+ocean)\s+(in\s+the\s+world|on\s+earth)",
+]
+STATIC_GEO_REGEX = re.compile("|".join(STATIC_GEO_PATTERNS), re.IGNORECASE)
 
 
 def analyze_signals(query: str) -> SignalAnalysis:
@@ -140,7 +174,64 @@ def analyze_signals(query: str) -> SignalAnalysis:
             )
         )
 
-    # 4. Check for Explicit Private Document triggers
+    # 4. Check for Static Science / Tech / Geography Fast-Path (0ms latency, zero search overhead)
+    # Strict Guardrail: Temporal/freshness triggers MUST NOT be present
+    has_temporal_guard = bool(TEMPORAL_REGEX.search(clean_query)) or bool(
+        re.search(r"\b(202[4-9]|latest|today|yesterday|live|score|current|new|who\s+won)\b", clean_query, re.IGNORECASE)
+    )
+    if not has_temporal_guard:
+        if STATIC_SCIENCE_REGEX.search(clean_query):
+            return SignalAnalysis(
+                is_conclusive=True,
+                decision=RoutingDecision(
+                    original_query=query,
+                    primary_route=RouteType.INTERNAL_LLM,
+                    intent=QueryIntent.CONCEPTUAL,
+                    volatility=KnowledgeVolatility.VERY_LOW,
+                    is_time_sensitive=False,
+                    requires_citations=False,
+                    confidence=1.0,
+                    reasoning="Tier 0 Fast-Path: High-confidence static scientific fact resolves internally.",
+                    tier_source="TIER_0_FAST_PATH",
+                ),
+                has_temporal_trigger=False,
+            )
+
+        if STATIC_TECH_REGEX.search(clean_query):
+            return SignalAnalysis(
+                is_conclusive=True,
+                decision=RoutingDecision(
+                    original_query=query,
+                    primary_route=RouteType.INTERNAL_LLM,
+                    intent=QueryIntent.CONCEPTUAL,
+                    volatility=KnowledgeVolatility.VERY_LOW,
+                    is_time_sensitive=False,
+                    requires_citations=False,
+                    confidence=1.0,
+                    reasoning="Tier 0 Fast-Path: Standard technical concept/abbreviation definition resolves internally.",
+                    tier_source="TIER_0_FAST_PATH",
+                ),
+                has_temporal_trigger=False,
+            )
+
+        if STATIC_GEO_REGEX.search(clean_query):
+            return SignalAnalysis(
+                is_conclusive=True,
+                decision=RoutingDecision(
+                    original_query=query,
+                    primary_route=RouteType.INTERNAL_LLM,
+                    intent=QueryIntent.FACTUAL,
+                    volatility=KnowledgeVolatility.VERY_LOW,
+                    is_time_sensitive=False,
+                    requires_citations=False,
+                    confidence=1.0,
+                    reasoning="Tier 0 Fast-Path: Stable geographical/historical fact resolves internally.",
+                    tier_source="TIER_0_FAST_PATH",
+                ),
+                has_temporal_trigger=False,
+            )
+
+    # 5. Check for Explicit Private Document triggers
     has_doc = bool(DOCUMENT_PATTERN.search(clean_query))
     if has_doc and not TEMPORAL_REGEX.search(clean_query):
         return SignalAnalysis(

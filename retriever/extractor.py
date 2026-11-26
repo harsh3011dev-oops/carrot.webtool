@@ -29,9 +29,10 @@ traf_config.set("DEFAULT", "DOWNLOAD_TIMEOUT", str(settings.SEARCH_TIMEOUT_SECON
 class WebContentExtractor:
     """
     Fetches and cleans web pages into high-density, noise-free text.
+    Preserves full article text for paragraph-aware semantic chunking.
     """
 
-    def __init__(self, max_chars_per_page: int = 3500):
+    def __init__(self, max_chars_per_page: int = 25000):
         self.max_chars_per_page = max_chars_per_page
 
     def extract_single(self, search_item: SearchResult) -> ExtractedDocument:
@@ -55,8 +56,23 @@ class WebContentExtractor:
 
             # 1. Fetch raw HTML using Trafilatura with custom user-agent
             downloaded = trafilatura.fetch_url(url, config=traf_config)
+            clean_text = None
 
+            # 1B. Fallback: Jina Reader if direct Trafilatura is blocked by Cloudflare/WAF
             if not downloaded:
+                try:
+                    import requests
+                    jina_res = requests.get(
+                        f"https://r.jina.ai/{url}",
+                        headers={"User-Agent": settings.USER_AGENT},
+                        timeout=settings.SEARCH_TIMEOUT_SECONDS,
+                    )
+                    if jina_res.status_code == 200 and len(jina_res.text.strip()) > 100:
+                        clean_text = jina_res.text.strip()
+                except Exception:
+                    pass
+
+            if not downloaded and not clean_text:
                 logger.warning(f"Failed to download URL: {url}. Using search snippet fallback.")
                 return ExtractedDocument(
                     source_index=search_item.source_index,
@@ -68,15 +84,16 @@ class WebContentExtractor:
                     error_message="Page could not be fetched (timeout or blocked). Search snippet retained.",
                 )
 
-            # 2. Extract clean article text & remove boilerplate
-            clean_text = trafilatura.extract(
-                downloaded,
-                include_links=False,
-                include_images=False,
-                include_tables=True,
-                output_format="txt",
-                config=traf_config,
-            )
+            # 2. Extract clean article text & remove boilerplate if not already rescued by Jina
+            if not clean_text and downloaded:
+                clean_text = trafilatura.extract(
+                    downloaded,
+                    include_links=False,
+                    include_images=False,
+                    include_tables=True,
+                    output_format="txt",
+                    config=traf_config,
+                )
 
             # 3. Fallback to BeautifulSoup if Trafilatura returned nothing
             if not clean_text or len(clean_text.strip()) < 50:

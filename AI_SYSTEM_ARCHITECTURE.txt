@@ -1,0 +1,513 @@
+================================================================================
+          PROJECT NOVA - AI SYSTEM ARCHITECTURE & CODE EXPLANATION
+================================================================================
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Project NOVA is an intelligent, local-first hybrid AI assistant that dynamically
+routes user questions to either:
+  a) Internal Parametric Model Memory (for static math, algorithms, definitions)
+  b) Live Grounded Web Retrieval (for dynamic news, sports, prices, fresh events)
+  c) Internal Document Vector Store (for private PDFs / uploaded files)
+
+NOVA is designed around Adaptive-RAG, Self-RAG, and Corrective-RAG (CRAG) principles
+to eliminate LLM hallucinations by enforcing strict, claim-level bracketed citations
+([1], [2]) pointing directly to verified web sources.
+
+
+2. THE 4 CORE AI CODE MODULES
+--------------------------------------------------------------------------------
+
+MODULE 1: The Model Socket Interface (Abstract Base Class)
+File: carrot.webtool/core/base_model.py
+Class: BaseLLMAdapter
+--------------------------------------------------------------------------------
+This is the single most important architectural file for your future AI models.
+It defines 4 strict contracts that any language model must implement:
+  - generate(): Generates plain text responses.
+  - generate_structured(): Forces the model to respond strictly according to a
+    Pydantic JSON schema (used for classification and routing).
+  - stream(): Streams output tokens chunk-by-chunk for live typing in the terminal.
+  - get_embeddings(): Converts text into dense vector representations.
+
+WHY THIS MATTERS:
+When you train your own proprietary PyTorch or HuggingFace model in the future,
+you do NOT touch the router, search engine, or citation code. You only create
+`models/my_custom_model.py` inheriting from `BaseLLMAdapter`, and NOVA will run
+on your own custom model immediately.
+
+
+MODULE 2: The Ollama Local Model Driver
+File: carrot.webtool/models/ollama_adapter.py
+Class: OllamaAdapter (Inherits from BaseLLMAdapter)
+--------------------------------------------------------------------------------
+This file bridges Python with your local Ollama runtime over HTTP (port 11434).
+Key features implemented in this file:
+  1. Real-time Streaming: Implements Python generator (`yield content`) so tokens
+     appear on screen in real-time as the GPU/CPU generates them.
+  2. Strict JSON Extraction: Calls Ollama with `format="json"`. It includes an
+     automatic regex stripper for markdown code blocks (```json ... ```) and an
+     automatic self-repair retry loop if the model emits malformed JSON.
+  3. Dense Embeddings: Calls Ollama's `/api/embeddings` endpoint using the
+     `nomic-embed-text` model to produce 768-dimensional vector arrays.
+
+
+MODULE 3: The 3-Tier Intelligent Query Router (HMSQR Engine)
+Files:
+  - carrot.webtool/intelligence/signals.py  (Tier 0: Deterministic Heuristics)
+  - carrot.webtool/intelligence/schemas.py  (Pydantic Data Contracts)
+  - carrot.webtool/intelligence/router.py   (Tier 1 & Tier 2 Cascading Engine)
+Class: IntelligentQueryRouter
+--------------------------------------------------------------------------------
+Instead of blindly searching the internet for every question (which wastes
+time and money), this AI engine categorizes the user's intent in 3 cascading tiers:
+
+  TIER 0 (0ms Latency Heuristics - signals.py):
+    Uses compiled regular expressions to identify obvious queries:
+      - Conversational greetings: "hi", "hello", "who are you" -> INTERNAL_LLM
+      - Pure Mathematics: "calculate", "derivative of", "solve" -> INTERNAL_LLM
+      - Algorithms / Code: "palindrome", "invert binary tree", "quicksort" -> INTERNAL_LLM
+      - Document queries: "my uploaded pdf", "summarize file" -> INTERNAL_RAG
+
+  TIER 1 (Semantic SLM Classification - router.py):
+    If Tier 0 is inconclusive, it calls a fast Small Language Model (Qwen 2.5 1.5B)
+    with a structured prompt. The model evaluates:
+      - Knowledge Volatility:
+          * VERY_LOW: Math, Physics, Grammar
+          * LOW: Established CS algorithms, historical concepts
+          * MEDIUM: Company leadership, product features
+          * HIGH: Software releases, government policies, breaking news
+          * EXTREME: Crypto/Stock prices, live sports, weather
+      - Search Query Generator: If web search is needed, the model converts the
+        conversational question into 1 to 3 crisp search keywords (e.g.,
+        "who is new mentor of csk" -> ["Chennai Super Kings new mentor 2027"]).
+
+  TIER 2 (Hard Policy Gatekeeper - router.py):
+    Enforces safety rules:
+      - If the query mentions post-cutoff dates (2025-2029) or keywords like
+        "latest", "today", "current price", Tier 2 OVERRIDES the decision and
+        mandates WEB_SEARCH to prevent outdated hallucinations.
+
+  AUTONOMOUS DATASET LOGGING:
+    Every routing decision (query, volatility, reasoning, search keywords) is
+    appended to `data/routing_dataset.jsonl` to automatically build a curated
+    fine-tuning dataset for your future custom model.
+
+
+MODULE 4: The Grounded Answer Synthesizer & Citation Engine
+File: carrot.webtool/main.py
+Class: NovaOrchestrator
+--------------------------------------------------------------------------------
+This is the master coordinator. It handles the end-to-end conversation turn:
+  1. Receives raw user prompt.
+  2. Asks IntelligentQueryRouter to determine the knowledge path.
+  3. If INTERNAL_LLM:
+       Streams the response directly using pretrained parametric memory.
+  4. If WEB_SEARCH:
+       - Runs live DuckDuckGo dual-channel search (News + Web).
+       - Runs parallel multi-threaded extraction using Trafilatura to clean HTML.
+       - Formats evidence blocks with source indices:
+           --- SOURCE [1]: Title ---
+           URL: https://...
+           CONTENT: Clean article body...
+       - Constructs the Grounded System Prompt:
+           "You MUST answer based strictly on the provided Web Evidence.
+            Every factual statement MUST cite its source with [1], [2].
+            If evidence lacks information, honestly state what is unverified."
+       - Streams the grounded answer in real-time.
+       - Prints the verified clickable source links beneath the answer.
+
+
+3. STEP-BY-STEP TRACE: HOW A QUERY MOVES THROUGH THE AI CODE
+--------------------------------------------------------------------------------
+
+EXAMPLE QUERY: "Who is the new mentor of Chennai Super Kings?"
+
+Step 1: Ingestion
+  - User enters text in `main.py:NovaOrchestrator.process_query()`.
+
+Step 2: Tier 0 Signal Analysis
+  - `signals.py:analyze_signals()` checks regex patterns.
+  - Detects temporal keywords ("new mentor"). Sets `has_temporal_trigger = True`.
+
+Step 3: Tier 1 SLM Classification
+  - `router.py` invokes `llm.generate_structured()` using `Qwen 2.5 1.5B`.
+  - Model outputs JSON:
+      {
+        "primary_route": "WEB_SEARCH",
+        "volatility": "MEDIUM",
+        "is_time_sensitive": true,
+        "search_queries": ["Chennai Super Kings new mentor", "CSK team mentor announcement"]
+      }
+
+Step 4: Tier 2 Gatekeeper Verification
+  - `router.py:_apply_policy_overrides()` verifies that time-sensitive facts are
+    locked to WEB_SEARCH.
+  - Appends the trace to `data/routing_dataset.jsonl`.
+
+Step 5: Live Retrieval & Extraction
+  - `retriever/web_search.py` queries DuckDuckGo for keywords.
+  - Returns 3 candidate URLs.
+  - `retriever/extractor.py` launches a ThreadPoolExecutor to fetch all 3 URLs
+    concurrently in under 1.5 seconds.
+  - Strips all ads, banners, footers, leaving only high-density clean text.
+
+Step 6: Grounded Synthesis
+  - `main.py:_format_evidence_context()` labels each document as [1], [2], [3].
+  - `main.py` feeds the evidence into `Qwen 2.5 3B` (Synthesizer model).
+  - The model streams:
+      "MS Dhoni has been appointed as the new mentor of Chennai Super Kings. [1] [2]"
+  - Prints verified source links directly below the answer.
+
+
+4. SUMMARY OF ROLES ACROSS REPOSITORY
+--------------------------------------------------------------------------------
+| Component               | File Path                  | AI Role                          |
+|-------------------------|----------------------------|----------------------------------|
+| Model Interface         | core/base_model.py         | Decoupled LLM Socket             |
+| Ollama Runtime          | models/ollama_adapter.py   | Model Execution, JSON, Embeddings|
+| Data Contracts          | intelligence/schemas.py    | Routing & Volatility Schemas     |
+| Heuristic Gatekeeper    | intelligence/signals.py    | 0ms Latency Regex Classifier     |
+| Brain / Router          | intelligence/router.py     | Cascading Decision Maker (HMSQR) |
+| Live Search             | retriever/web_search.py    | Free DuckDuckGo Dual Channel     |
+| Content Cleaner         | retriever/extractor.py     | Parallel Boilerplate Stripper    |
+| Master Orchestrator     | main.py                    | Prompt Grounding & Citations     |
+| Settings                | config.py                  | Model Names, Temperatures, URLs  |
+================================================================================
+
+piet@spark-4944:~/Desktop/Rishabh/LLM$ cd "/home/piet/Desktop/harsh /CARROT.WEBTOOL EXTENSION/carrot.webtool"
+source venv/bin/activate
+python main.py
+======================================================================
+           PROJECT NOVA - HYBRID AI ASSISTANT (DAY 1)
+      Neural Orchestrator for Verified Answers | Local-First
+======================================================================
+Initializing Project NOVA Core Engines...
+✓ NOVA Ready: Router (qwen2.5:1.5b) | Synthesizer (qwen2.5-coder:latest)
+
+Type your question below (or type 'exit' / 'quit' to stop):
+
+Ask NOVA >> tell me who won have the record of fastest 200 in odi international cricket
+
+User Query: tell me who won have the record of fastest 200 in odi international cricket
+------------------------------------------------------------
+[ROUTER DECISION]
+  • Primary Route   : WEB_SEARCH
+  • Tier Decision   : TIER_1_SLM (1.26s)
+  • Volatility      : HIGH
+  • Time Sensitive  : True
+  • Rationale       : The query is asking for a specific historical record in cricket, which requires up-to-date information and a precise answer. The volatility is high due to the need for real-time data, and the query is not a conceptual question.
+
+[LOCAL NEWS INTELLIGENCE DATABASE] -> Found 3 verified articles in 0.00s (Zero Web Latency!)
+
+NOVA Grounded Response (With Citations):
+
+I'm sorry, but the provided web evidence does not contain any information related to the fastest 200 in ODI (One Day International) international cricket. The evidence includes news articles and content about cricket players and teams, but none of them address the specific question about the fastest 200 in ODI cricket. Therefore, I cannot provide an answer based on the given information.
+
+Verified Sources:
+  [1] Bartlett to miss start of BBL after knee surgery (Date: 2026-11-25T06:06:59.188197) -> https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+  [2] Sooryavanshi on 53-ball 204: 'I spoke to Yuvraj openly and backed my strengths' (Date: 2026-11-25T06:06:58.256398) -> https://www.cricinfo.com/ci/content/story/1563875.html?ex_cid=OTC-RSS
+  [3] South Africa pick eight uncapped players for India women's Test (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563796.html?ex_cid=OTC-RSS
+
+------------------------------------------------------------
+✓ Total Execution Latency: 3.84s
+
+Ask NOVA >> tell me score of south africa vs bangladesh test match
+
+User Query: tell me score of south africa vs bangladesh test match
+------------------------------------------------------------
+
+[ROUTER DECISION]
+  • Primary Route   : WEB_SEARCH
+  • Tier Decision   : TIER_1_SLM (0.98s)
+  • Volatility      : MEDIUM
+  • Time Sensitive  : False
+  • Rationale       : The query is asking for the score of a specific cricket match between South Africa and Bangladesh, which is a factual question. The information is not time-sensitive and does not require citations.
+
+[LOCAL NEWS INTELLIGENCE DATABASE] -> Found 3 verified articles in 0.00s (Zero Web Latency!)
+
+NOVA Grounded Response (With Citations):
+
+Based on the information provided in the web evidence, the score of the South Africa vs Bangladesh Test match at the time of the evidence was:
+
+South Africa 494 for 7 (Ackerman 150, Mulder 100, Jansen 67, Khaled 2-88) lead Bangladesh 91 by 403 runs [2].
+
+Sources:
+[1] https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+[2] https://www.cricinfo.com/ci/content/story/1563809.html?ex_cid=OTC-RSS
+
+Verified Sources:
+  [1] Bartlett to miss start of BBL after knee surgery (Date: 2026-11-25T06:06:59.188197) -> https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+  [2] Ackerman, Mulder tons grind down Bangladesh as SA batters make hay (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563809.html?ex_cid=OTC-RSS
+  [3] Shoriful admits Bangladesh's pace attack 'lacked discipline' (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563856.html?ex_cid=OTC-RSS
+
+------------------------------------------------------------
+✓ Total Execution Latency: 5.13s
+
+Ask NOVA >> Ask NOVA >>  Reports indicate the U.S. is planning new tariffs affecting India, China, and several other countries following a trade probe.
+
+User Query: Reports indicate the U.S. is planning new tariffs affecting India, China, and several other countries following a trade probe.
+------------------------------------------------------------
+First JSON validation attempt failed: 1 validation error for RoutingDecision
+  Invalid JSON: EOF while parsing a string at line 24 column 19 [type=json_invalid, input_value='{\n  "original_query": "...",\n    "Trade probe by', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.14/v/json_invalid. Raw content: {
+  "original_query": "Reports indicate the U.S. is planning new tariffs affecting India, China, and several other countries following a trade probe.",
+  "primary_route": "WEB_SEARCH",
+  "intent": "FACTUAL",
+  "volatility": "HIGH",
+  "is_time_sensitive": true,
+  "requires_citations": true,
+  "confidence": 1.0,
+  "reasoning": "The query is asking for factual information about U.S. tariffs and their impact on India and China, which requires up-to-date real-time evidence and traceable citations.",
+  "sub_queries": [
+    {
+      "sub_query": "What are the U.S. tariffs planned for India and China?",
+      "route": "WEB_SEARCH",
+      "reasoning": "This sub-question is needed to understand the specific tariffs and their impact on India and China."
+    },
+    {
+      "sub_query": "What is the trade probe mentioned in the report?",
+      "route": "WEB_SEARCH",
+      "reasoning": "This sub-question is needed to understand the context of the trade probe and its implications."
+    }
+  ],
+  "search_queries": [
+    "U.S. tariffs on India and China",
+    "Trade probe by
+Tier 1 SLM classification failed: 7 validation errors for RoutingDecision
+original_query
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+primary_route
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+intent
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+volatility
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+is_time_sensitive
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+requires_citations
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+reasoning
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing. Falling back to default policy.
+[ROUTER DECISION]
+  • Primary Route   : INTERNAL_LLM
+  • Tier Decision   : FALLBACK_POLICY (10.59s)
+  • Volatility      : LOW
+  • Time Sensitive  : False
+  • Rationale       : Fallback decision triggered due to classification timeout/error.
+
+[INTERNAL GENERATION] (Pretrained knowledge, zero search cost)
+
+NOVA Response:
+
+The U.S. is reportedly planning new tariffs on India, China, and several other countries as a response to a trade probe. These tariffs are part of a broader effort to address what the U.S. perceives as unfair trade practices and to protect American industries. The specific details of the tariffs, including their amount and the products they will affect, are not yet finalized and are subject to change. The move has been met with significant opposition from these countries and other trading partners, who fear it could lead to increased trade tensions and economic instability.
+
+------------------------------------------------------------
+✓ Total Execution Latency: 15.01s
+
+Ask NOVA >> which team won first test match between india and new zealandf
+
+User Query: which team won first test match between india and new zealandf
+------------------------------------------------------------
+[ROUTER DECISION]
+  • Primary Route   : WEB_SEARCH
+  • Tier Decision   : TIER_1_SLM (1.18s)
+  • Volatility      : MEDIUM
+  • Time Sensitive  : False
+  • Rationale       : The query is asking for a specific historical fact about a cricket match, which is a time-sensitive event. The information is not likely to change rapidly, making it a medium volatility query.
+
+[LOCAL NEWS INTELLIGENCE DATABASE] -> Found 3 verified articles in 0.00s (Zero Web Latency!)
+
+NOVA Grounded Response (With Citations):
+
+Based on the provided web evidence, there is no information about the first test match between India and New Zealand. The evidence does not contain any details related to cricket matches between these two teams. Therefore, the claim cannot be verified, and the information could not be confirmed or refuted with the given sources.
+
+Sources:
+[1] Bartlett to miss start of BBL after knee surgery (https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS)
+[2] Sooryavanshi on 53-ball 204: 'I spoke to Yuvraj openly and backed my strengths' (https://www.cricinfo.com/ci/content/story/1563875.html?ex_cid=OTC-RSS)
+[3] Shoriful admits Bangladesh's pace attack 'lacked discipline' (https://www.cricinfo.com/ci/content/story/1563856.html?ex_cid=OTC-RSS)
+
+Verified Sources:
+  [1] Bartlett to miss start of BBL after knee surgery (Date: 2026-11-25T06:06:59.188197) -> https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+  [2] Sooryavanshi on 53-ball 204: 'I spoke to Yuvraj openly and backed my strengths' (Date: 2026-11-25T06:06:58.256398) -> https://www.cricinfo.com/ci/content/story/1563875.html?ex_cid=OTC-RSS
+  [3] Shoriful admits Bangladesh's pace attack 'lacked discipline' (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563856.html?ex_cid=OTC-RSS
+
+------------------------------------------------------------
+✓ Total Execution Latency: 7.06s
+
+Ask NOVA >> 
+piet@spark-4944:~/Desktop/Rishabh/LLM$ cd "/home/piet/Desktop/harsh /CARROT.WEBTOOL EXTENSION/carrot.webtool"
+source venv/bin/activate
+python main.py
+======================================================================
+           PROJECT NOVA - HYBRID AI ASSISTANT (DAY 1)
+      Neural Orchestrator for Verified Answers | Local-First
+======================================================================
+Initializing Project NOVA Core Engines...
+✓ NOVA Ready: Router (qwen2.5:1.5b) | Synthesizer (qwen2.5-coder:latest)
+
+Type your question below (or type 'exit' / 'quit' to stop):
+
+Ask NOVA >> tell me who won have the record of fastest 200 in odi international cricket
+
+User Query: tell me who won have the record of fastest 200 in odi international cricket
+------------------------------------------------------------
+[ROUTER DECISION]
+  • Primary Route   : WEB_SEARCH
+  • Tier Decision   : TIER_1_SLM (1.26s)
+  • Volatility      : HIGH
+  • Time Sensitive  : True
+  • Rationale       : The query is asking for a specific historical record in cricket, which requires up-to-date information and a precise answer. The volatility is high due to the need for real-time data, and the query is not a conceptual question.
+
+[LOCAL NEWS INTELLIGENCE DATABASE] -> Found 3 verified articles in 0.00s (Zero Web Latency!)
+
+NOVA Grounded Response (With Citations):
+
+I'm sorry, but the provided web evidence does not contain any information related to the fastest 200 in ODI (One Day International) international cricket. The evidence includes news articles and content about cricket players and teams, but none of them address the specific question about the fastest 200 in ODI cricket. Therefore, I cannot provide an answer based on the given information.
+
+Verified Sources:
+  [1] Bartlett to miss start of BBL after knee surgery (Date: 2026-11-25T06:06:59.188197) -> https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+  [2] Sooryavanshi on 53-ball 204: 'I spoke to Yuvraj openly and backed my strengths' (Date: 2026-11-25T06:06:58.256398) -> https://www.cricinfo.com/ci/content/story/1563875.html?ex_cid=OTC-RSS
+  [3] South Africa pick eight uncapped players for India women's Test (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563796.html?ex_cid=OTC-RSS
+
+------------------------------------------------------------
+✓ Total Execution Latency: 3.84s
+
+Ask NOVA >> tell me score of south africa vs bangladesh test match
+
+User Query: tell me score of south africa vs bangladesh test match
+------------------------------------------------------------
+
+[ROUTER DECISION]
+  • Primary Route   : WEB_SEARCH
+  • Tier Decision   : TIER_1_SLM (0.98s)
+  • Volatility      : MEDIUM
+  • Time Sensitive  : False
+  • Rationale       : The query is asking for the score of a specific cricket match between South Africa and Bangladesh, which is a factual question. The information is not time-sensitive and does not require citations.
+
+[LOCAL NEWS INTELLIGENCE DATABASE] -> Found 3 verified articles in 0.00s (Zero Web Latency!)
+
+NOVA Grounded Response (With Citations):
+
+Based on the information provided in the web evidence, the score of the South Africa vs Bangladesh Test match at the time of the evidence was:
+
+South Africa 494 for 7 (Ackerman 150, Mulder 100, Jansen 67, Khaled 2-88) lead Bangladesh 91 by 403 runs [2].
+
+Sources:
+[1] https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+[2] https://www.cricinfo.com/ci/content/story/1563809.html?ex_cid=OTC-RSS
+
+Verified Sources:
+  [1] Bartlett to miss start of BBL after knee surgery (Date: 2026-11-25T06:06:59.188197) -> https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+  [2] Ackerman, Mulder tons grind down Bangladesh as SA batters make hay (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563809.html?ex_cid=OTC-RSS
+  [3] Shoriful admits Bangladesh's pace attack 'lacked discipline' (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563856.html?ex_cid=OTC-RSS
+
+------------------------------------------------------------
+✓ Total Execution Latency: 5.13s
+
+Ask NOVA >> Ask NOVA >>  Reports indicate the U.S. is planning new tariffs affecting India, China, and several other countries following a trade probe.
+
+User Query: Reports indicate the U.S. is planning new tariffs affecting India, China, and several other countries following a trade probe.
+------------------------------------------------------------
+First JSON validation attempt failed: 1 validation error for RoutingDecision
+  Invalid JSON: EOF while parsing a string at line 24 column 19 [type=json_invalid, input_value='{\n  "original_query": "...",\n    "Trade probe by', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.14/v/json_invalid. Raw content: {
+  "original_query": "Reports indicate the U.S. is planning new tariffs affecting India, China, and several other countries following a trade probe.",
+  "primary_route": "WEB_SEARCH",
+  "intent": "FACTUAL",
+  "volatility": "HIGH",
+  "is_time_sensitive": true,
+  "requires_citations": true,
+  "confidence": 1.0,
+  "reasoning": "The query is asking for factual information about U.S. tariffs and their impact on India and China, which requires up-to-date real-time evidence and traceable citations.",
+  "sub_queries": [
+    {
+      "sub_query": "What are the U.S. tariffs planned for India and China?",
+      "route": "WEB_SEARCH",
+      "reasoning": "This sub-question is needed to understand the specific tariffs and their impact on India and China."
+    },
+    {
+      "sub_query": "What is the trade probe mentioned in the report?",
+      "route": "WEB_SEARCH",
+      "reasoning": "This sub-question is needed to understand the context of the trade probe and its implications."
+    }
+  ],
+  "search_queries": [
+    "U.S. tariffs on India and China",
+    "Trade probe by
+Tier 1 SLM classification failed: 7 validation errors for RoutingDecision
+original_query
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+primary_route
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+intent
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+volatility
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+is_time_sensitive
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+requires_citations
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing
+reasoning
+  Field required [type=missing, input_value={'$defs': {'KnowledgeVola...sion', 'type': 'object'}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing. Falling back to default policy.
+[ROUTER DECISION]
+  • Primary Route   : INTERNAL_LLM
+  • Tier Decision   : FALLBACK_POLICY (10.59s)
+  • Volatility      : LOW
+  • Time Sensitive  : False
+  • Rationale       : Fallback decision triggered due to classification timeout/error.
+
+[INTERNAL GENERATION] (Pretrained knowledge, zero search cost)
+
+NOVA Response:
+
+The U.S. is reportedly planning new tariffs on India, China, and several other countries as a response to a trade probe. These tariffs are part of a broader effort to address what the U.S. perceives as unfair trade practices and to protect American industries. The specific details of the tariffs, including their amount and the products they will affect, are not yet finalized and are subject to change. The move has been met with significant opposition from these countries and other trading partners, who fear it could lead to increased trade tensions and economic instability.
+
+------------------------------------------------------------
+✓ Total Execution Latency: 15.01s
+
+Ask NOVA >> which team won first test match between india and new zealandf
+
+User Query: which team won first test match between india and new zealandf
+------------------------------------------------------------
+[ROUTER DECISION]
+  • Primary Route   : WEB_SEARCH
+  • Tier Decision   : TIER_1_SLM (1.18s)
+  • Volatility      : MEDIUM
+  • Time Sensitive  : False
+  • Rationale       : The query is asking for a specific historical fact about a cricket match, which is a time-sensitive event. The information is not likely to change rapidly, making it a medium volatility query.
+
+[LOCAL NEWS INTELLIGENCE DATABASE] -> Found 3 verified articles in 0.00s (Zero Web Latency!)
+
+NOVA Grounded Response (With Citations):
+
+Based on the provided web evidence, there is no information about the first test match between India and New Zealand. The evidence does not contain any details related to cricket matches between these two teams. Therefore, the claim cannot be verified, and the information could not be confirmed or refuted with the given sources.
+
+Sources:
+[1] Bartlett to miss start of BBL after knee surgery (https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS)
+[2] Sooryavanshi on 53-ball 204: 'I spoke to Yuvraj openly and backed my strengths' (https://www.cricinfo.com/ci/content/story/1563875.html?ex_cid=OTC-RSS)
+[3] Shoriful admits Bangladesh's pace attack 'lacked discipline' (https://www.cricinfo.com/ci/content/story/1563856.html?ex_cid=OTC-RSS)
+
+Verified Sources:
+  [1] Bartlett to miss start of BBL after knee surgery (Date: 2026-11-25T06:06:59.188197) -> https://www.cricinfo.com/ci/content/story/1563870.html?ex_cid=OTC-RSS
+  [2] Sooryavanshi on 53-ball 204: 'I spoke to Yuvraj openly and backed my strengths' (Date: 2026-11-25T06:06:58.256398) -> https://www.cricinfo.com/ci/content/story/1563875.html?ex_cid=OTC-RSS
+  [3] Shoriful admits Bangladesh's pace attack 'lacked discipline' (Date: 2026-11-24T00:00:00) -> https://www.cricinfo.com/ci/content/story/1563856.html?ex_cid=OTC-RSS
+
+------------------------------------------------------------
+✓ Total Execution Latency: 7.06s
+
+Ask NOVA >> 
